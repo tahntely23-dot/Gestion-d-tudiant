@@ -1,0 +1,6 @@
+{
+  "name": "EduGlass Pro - Student Management",
+  "description": "Plateforme moderne de gestion scolaire glassmorphism : gestion des étudiants, classes, matières, notes, présences, professeurs et bulletins officiels.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
