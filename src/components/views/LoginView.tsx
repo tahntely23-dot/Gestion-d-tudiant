@@ -17,6 +17,7 @@ import {
   CalendarCheck,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import { supabaseConfigError } from '../../lib/supabase';
 
 export const LoginView: React.FC = () => {
   const { login, signup, loginWithOAuth, resetPassword } = useSchool();
@@ -45,7 +46,7 @@ export const LoginView: React.FC = () => {
   // General Loading & Status States
   const [isLoading, setIsLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<'google' | 'facebook' | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(supabaseConfigError);
 
   // Validation States
   const [fieldErrors, setFieldErrors] = useState<{
@@ -175,8 +176,8 @@ export const LoginView: React.FC = () => {
       } else {
         setErrorMessage(result.error || 'Email ou mot de passe incorrect.');
       }
-    } catch (err) {
-      setErrorMessage('Email ou mot de passe incorrect.');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Email ou mot de passe incorrect.');
     } finally {
       setIsLoading(false);
     }
@@ -236,23 +237,21 @@ export const LoginView: React.FC = () => {
     try {
       const result = await loginWithOAuth(provider);
       if (result.success) {
-        confetti({
-          particleCount: 50,
-          spread: 60,
-          origin: { y: 0.6 },
-        });
-      } else if (result.error) {
-        setErrorMessage(
-          provider === 'google'
-            ? 'Connexion Google impossible. Veuillez réessayer.'
-            : 'Connexion Facebook impossible. Veuillez réessayer.'
-        );
+        // The browser is redirected to the provider; the session is restored on callback.
+        return;
       }
-    } catch (err) {
       setErrorMessage(
-        provider === 'google'
-          ? 'Connexion Google impossible. Veuillez réessayer.'
-          : 'Connexion Facebook impossible. Veuillez réessayer.'
+        result.error ||
+          (provider === 'google'
+            ? 'Connexion Google impossible. Veuillez réessayer.'
+            : 'Connexion Facebook impossible. Veuillez réessayer.')
+      );
+    } catch (err: any) {
+      setErrorMessage(
+        err?.message ||
+          (provider === 'google'
+            ? 'Connexion Google impossible. Veuillez réessayer.'
+            : 'Connexion Facebook impossible. Veuillez réessayer.')
       );
     } finally {
       setOauthLoading(null);

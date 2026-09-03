@@ -1,16 +1,34 @@
 import { createClient, SupabaseClient, User, Session } from '@supabase/supabase-js';
 import { UserProfile, AuthUser } from '../types';
 
-// Environment variables (Safe public keys only - NO secrets on frontend)
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Environment variables (public keys only: publishable/anon key - NEVER a secret key)
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || '').trim();
+const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 
-export const isSupabaseConfigured = Boolean(
-  SUPABASE_URL && 
-  SUPABASE_ANON_KEY && 
-  !SUPABASE_URL.includes('your-project') &&
-  !SUPABASE_ANON_KEY.includes('your-anon')
-);
+// A secret key (sb_secret_... or a service_role JWT) must never reach the browser.
+const isSecretKey =
+  SUPABASE_ANON_KEY.startsWith('sb_secret') ||
+  SUPABASE_ANON_KEY.includes('service_role');
+
+const hasPlaceholderValues =
+  !SUPABASE_URL ||
+  !SUPABASE_ANON_KEY ||
+  SUPABASE_URL.includes('your-project') ||
+  SUPABASE_ANON_KEY.includes('your-anon');
+
+export const supabaseConfigError: string | null = isSecretKey
+  ? 'VITE_SUPABASE_ANON_KEY contient une clé secrète. Utilisez uniquement la clé publishable (sb_publishable_… ou anon public).'
+  : hasPlaceholderValues
+    ? 'VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY ne sont pas renseignées dans le fichier .env.'
+    : null;
+
+export const isSupabaseConfigured = supabaseConfigError === null;
+
+if (isSecretKey) {
+  console.error(
+    '[Supabase] Clé secrète détectée dans VITE_SUPABASE_ANON_KEY. Le client n’a pas été initialisé.',
+  );
+}
 
 // Real Supabase client instance (or null if unconfigured)
 export const supabase: SupabaseClient | null = isSupabaseConfigured
@@ -19,6 +37,7 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: true,
+        flowType: 'pkce',
       },
     })
   : null;
@@ -186,77 +205,99 @@ export function profileToAuthUser(profile: UserProfile): AuthUser {
   };
 }
 
+const PROVIDER_LABELS: Record<'google' | 'facebook', string> = {
+  google: 'Google',
+  facebook: 'Facebook',
+};
+
 /**
- * Execute OAuth Sign-In (Google or Facebook)
+ * Translates a Supabase Auth error into an actionable French message.
+ */
+export function describeAuthError(
+  message: string,
+  provider?: 'google' | 'facebook',
+): string {
+  const raw = (message || '').toLowerCase();
+  const label = provider ? PROVIDER_LABELS[provider] : 'Ce fournisseur';
+
+  if (raw.includes('provider is not enabled') || raw.includes('unsupported provider')) {
+    return `Le fournisseur ${label} n’est pas activé sur votre projet Supabase. Activez-le dans Supabase Dashboard → Authentication → Sign In / Providers → ${label}, renseignez le Client ID / Client Secret, puis enregistrez.`;
+  }
+  if (raw.includes('invalid login credentials')) {
+    return 'Email ou mot de passe incorrect.';
+  }
+  if (raw.includes('email not confirmed')) {
+    return 'Votre adresse email n’a pas encore été confirmée. Consultez le lien de confirmation reçu par email.';
+  }
+  if (raw.includes('email logins are disabled') || raw.includes('signups not allowed')) {
+    return 'Les connexions par email sont désactivées dans Supabase → Authentication → Sign In / Providers → Email.';
+  }
+  if (raw.includes('user already registered')) {
+    return 'Un compte existe déjà avec cette adresse email.';
+  }
+  if (raw.includes('redirect') && raw.includes('not allowed')) {
+    return 'URL de redirection non autorisée. Ajoutez l’URL de l’application dans Supabase → Authentication → URL Configuration (Site URL et Redirect URLs).';
+  }
+  if (raw.includes('failed to fetch') || raw.includes('networkerror')) {
+    return 'Impossible de contacter Supabase. Vérifiez VITE_SUPABASE_URL et votre connexion réseau.';
+  }
+  return message;
+}
+
+/**
+ * Execute OAuth Sign-In (Google or Facebook) through Supabase Auth.
+ * The browser is redirected to the provider; the session is picked up on return
+ * by `detectSessionInUrl` and the `onAuthStateChange` listener.
  */
 export async function signInWithOAuthProvider(provider: 'google' | 'facebook'): Promise<{
   success: boolean;
   error?: string;
   user?: AuthUser;
 }> {
-  // 1. If real Supabase is configured, trigger official Supabase OAuth flow
-  if (supabase && isSupabaseConfigured) {
-    try {
-      const redirectUrl = window.location.origin;
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: provider,
-        options: {
-          redirectTo: redirectUrl,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
-        },
-      });
-
-      if (error) {
-        return { success: false, error: error.message };
-      }
-
-      // If browser redirects directly, this succeeds
-      return { success: true };
-    } catch (e: any) {
-      return { success: false, error: e.message || 'Erreur lors de la redirection OAuth' };
-    }
+  if (!supabase || !isSupabaseConfigured) {
+    return {
+      success: false,
+      error: supabaseConfigError || 'Supabase n’est pas configuré.',
+    };
   }
 
-  // 2. Interactive OAuth Flow Simulation (For preview & testing)
-  // Provides authentic Google / Facebook identity extraction, profile creation, and validation
-  return new Promise((resolve) => {
-    setTimeout(async () => {
-      const mockEmail = provider === 'google' 
-        ? 'alex.dupont.google@gmail.com' 
-        : 'marie.laurent.fb@facebook.com';
-      
-      const mockName = provider === 'google' 
-        ? 'Alexandre Dupont (Google)' 
-        : 'Marie Laurent (Facebook)';
+  try {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: {
+        redirectTo: window.location.origin,
+        // Google-only parameters; Facebook rejects unknown OAuth query params.
+        ...(provider === 'google'
+          ? { queryParams: { access_type: 'offline', prompt: 'consent' } }
+          : {}),
+      },
+    });
 
-      const mockAvatar = provider === 'google'
-        ? 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80'
-        : 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&auto=format&fit=crop&q=80';
+    if (error) {
+      return { success: false, error: describeAuthError(error.message, provider) };
+    }
 
-      const userProfile = await syncOrCreateProfile({
-        id: `oauth_${provider}_${Date.now()}`,
-        email: mockEmail,
-        provider: provider,
-        user_metadata: {
-          full_name: mockName,
-          name: mockName,
-          avatar_url: mockAvatar,
-          provider: provider,
-        },
-      });
+    // The browser is being redirected to the provider; the session arrives on callback.
+    return { success: true };
+  } catch (e: any) {
+    return {
+      success: false,
+      error: describeAuthError(e?.message || 'Erreur lors de la redirection OAuth', provider),
+    };
+  }
+}
 
-      const authUser = profileToAuthUser(userProfile);
-      localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(authUser));
-      
-      resolve({
-        success: true,
-        user: authUser,
-      });
-    }, 600);
-  });
+/**
+ * Reads the current Supabase session (source of truth for private pages)
+ */
+export async function getCurrentSession(): Promise<Session | null> {
+  if (!supabase || !isSupabaseConfigured) return null;
+  const { data, error } = await supabase.auth.getSession();
+  if (error) {
+    console.warn('Supabase getSession error:', error.message);
+    return null;
+  }
+  return data.session;
 }
 
 /**
@@ -275,7 +316,7 @@ export async function signInWithEmailPassword(
       });
 
       if (error) {
-        return { success: false, error: error.message };
+        return { success: false, error: describeAuthError(error.message) };
       }
 
       if (data.user) {
@@ -288,8 +329,10 @@ export async function signInWithEmailPassword(
         const authUser = profileToAuthUser(profile);
         return { success: true, user: authUser };
       }
+
+      return { success: false, error: 'Connexion impossible : aucune session renvoyée par Supabase.' };
     } catch (e: any) {
-      return { success: false, error: e.message || 'Erreur d’authentification' };
+      return { success: false, error: describeAuthError(e?.message || 'Erreur d’authentification') };
     }
   }
 
@@ -335,7 +378,7 @@ export async function signUpWithEmailPassword(
       });
 
       if (error) {
-        return { success: false, error: error.message };
+        return { success: false, error: describeAuthError(error.message) };
       }
 
       if (data.user) {
@@ -348,8 +391,13 @@ export async function signUpWithEmailPassword(
         const authUser = profileToAuthUser(profile);
         return { success: true, user: authUser };
       }
+
+      return {
+        success: false,
+        error: 'Compte créé : confirmez votre adresse email avant de vous connecter.',
+      };
     } catch (e: any) {
-      return { success: false, error: e.message || 'Erreur lors de l’inscription' };
+      return { success: false, error: describeAuthError(e?.message || 'Erreur lors de l’inscription') };
     }
   }
 
@@ -377,11 +425,11 @@ export async function resetPasswordForEmail(email: string): Promise<{ success: b
         redirectTo: window.location.origin,
       });
       if (error) {
-        return { success: false, error: error.message };
+        return { success: false, error: describeAuthError(error.message) };
       }
       return { success: true };
     } catch (e: any) {
-      return { success: false, error: e.message || 'Erreur lors de la réinitialisation' };
+      return { success: false, error: describeAuthError(e?.message || 'Erreur lors de la réinitialisation') };
     }
   }
 
