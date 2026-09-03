@@ -12,7 +12,8 @@ interface StudentModalProps {
 export const StudentModal: React.FC<StudentModalProps> = ({ isOpen, onClose, studentToEdit }) => {
   const { classes, addStudent, updateStudent } = useSchool();
 
-  const [name, setName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [classId, setClassId] = useState(classes[0]?.id || '');
   const [gender, setGender] = useState<'M' | 'F' | 'Autre'>('M');
@@ -24,10 +25,13 @@ export const StudentModal: React.FC<StudentModalProps> = ({ isOpen, onClose, stu
   const [address, setAddress] = useState('');
   const [avatar, setAvatar] = useState('https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=250&auto=format&fit=crop&q=80');
   const [notes, setNotes] = useState('');
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Field validation states
   const [errors, setErrors] = useState<{
-    name?: string;
+    firstName?: string;
+    lastName?: string;
     classId?: string;
     email?: string;
   }>({});
@@ -35,20 +39,22 @@ export const StudentModal: React.FC<StudentModalProps> = ({ isOpen, onClose, stu
 
   useEffect(() => {
     if (studentToEdit) {
-      setName(studentToEdit.name);
-      setEmail(studentToEdit.email);
-      setClassId(studentToEdit.classId);
-      setGender(studentToEdit.gender);
-      setDateOfBirth(studentToEdit.dateOfBirth);
-      setRollNumber(studentToEdit.rollNumber);
-      setParentName(studentToEdit.parentName);
-      setParentPhone(studentToEdit.parentPhone);
-      setParentEmail(studentToEdit.parentEmail);
-      setAddress(studentToEdit.address);
-      setAvatar(studentToEdit.avatar);
-      setNotes(studentToEdit.notes || '');
+      setFirstName(studentToEdit.first_name || studentToEdit.name?.split(' ')[0] || '');
+      setLastName(studentToEdit.last_name || studentToEdit.name?.split(' ').slice(1).join(' ') || '');
+      setEmail(studentToEdit.email ?? '');
+      setClassId(studentToEdit.classId ?? studentToEdit.class_id ?? (classes[0]?.id || ''));
+      setGender(studentToEdit.gender ?? 'M');
+      setDateOfBirth(studentToEdit.birth_date ?? studentToEdit.dateOfBirth ?? '2007-05-15');
+      setRollNumber(studentToEdit.rollNumber ?? studentToEdit.matricule ?? '');
+      setParentName(studentToEdit.parentName ?? studentToEdit.parent_name ?? '');
+      setParentPhone(studentToEdit.parentPhone ?? studentToEdit.parent_phone ?? '');
+      setParentEmail(studentToEdit.parentEmail ?? studentToEdit.parent_email ?? '');
+      setAddress(studentToEdit.address ?? '');
+      setAvatar(studentToEdit.avatar ?? studentToEdit.photo_url ?? 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=250&auto=format&fit=crop&q=80');
+      setNotes(studentToEdit.notes ?? '');
     } else {
-      setName('');
+      setFirstName('');
+      setLastName('');
       setEmail('');
       setClassId(classes[0]?.id || '');
       setGender('M');
@@ -63,70 +69,109 @@ export const StudentModal: React.FC<StudentModalProps> = ({ isOpen, onClose, stu
     }
     setErrors({});
     setTouched({});
+    setSubmitError(null);
+    setIsSubmitting(false);
   }, [studentToEdit, isOpen, classes]);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setTouched({ name: true, classId: true, email: true });
-
-    const newErrors: { name?: string; classId?: string; email?: string } = {};
-    if (!name.trim()) {
-      newErrors.name = 'Le nom et prénom sont obligatoires.';
-    } else if (name.trim().length < 3) {
-      newErrors.name = 'Le nom doit comporter au moins 3 caractères.';
+  const validate = () => {
+    const newErrors: typeof errors = {};
+    if (!firstName.trim()) {
+      newErrors.firstName = 'Le prénom est obligatoire.';
+    } else if (firstName.trim().length < 2) {
+      newErrors.firstName = 'Le prénom doit comporter au moins 2 caractères.';
     }
-
+    if (!lastName.trim()) {
+      newErrors.lastName = 'Le nom de famille est obligatoire.';
+    } else if (lastName.trim().length < 2) {
+      newErrors.lastName = 'Le nom doit comporter au moins 2 caractères.';
+    }
     if (!classId) {
-      newErrors.classId = 'Veuillez assigner une classe à l\'élève.';
+      newErrors.classId = "Veuillez assigner une classe à l'élève.";
     }
-
     if (email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      newErrors.email = 'Format d\'adresse email invalide.';
+      newErrors.email = "Format d'adresse email invalide.";
     }
+    return newErrors;
+  };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setTouched({ firstName: true, lastName: true, classId: true, email: true });
+    setSubmitError(null);
+
+    const newErrors = validate();
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
     }
 
-    if (studentToEdit) {
-      updateStudent({
-        ...studentToEdit,
-        name,
-        email: email || `${name.toLowerCase().replace(/\s+/g, '.')}@student.eduglass.edu`,
-        classId,
-        gender,
-        dateOfBirth,
-        rollNumber,
-        parentName,
-        parentPhone,
-        parentEmail,
-        address,
-        avatar,
-        notes,
-      });
-    } else {
-      addStudent({
-        name,
-        email: email || `${name.toLowerCase().replace(/\s+/g, '.')}@student.eduglass.edu`,
-        classId,
-        className: classes.find((c) => c.id === classId)?.name || '',
-        gender,
-        dateOfBirth,
-        rollNumber: rollNumber || `EDU-2024-0${Math.floor(Math.random() * 90 + 10)}`,
-        parentName,
-        parentPhone,
-        parentEmail,
-        address,
-        avatar: avatar || 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=250&auto=format&fit=crop&q=80',
-        status: 'active',
-        admissionDate: '2024-09-01',
-        notes,
-      });
+    setIsSubmitting(true);
+
+    const selectedClass = classes.find((c) => c.id === classId);
+    const fullEmail = email.trim() || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@student.eduglass.edu`;
+
+    const studentPayload: Partial<Student> = {
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
+      email: fullEmail,
+      class_id: classId || null,
+      classId: classId || undefined,
+      class_name: selectedClass?.name || null,
+      className: selectedClass?.name || '',
+      gender,
+      birth_date: dateOfBirth || null,
+      dateOfBirth: dateOfBirth || '2007-05-15',
+      parentName: parentName.trim() || undefined,
+      parent_name: parentName.trim() || undefined,
+      parentPhone: parentPhone.trim() || undefined,
+      parent_phone: parentPhone.trim() || undefined,
+      parentEmail: parentEmail.trim() || undefined,
+      parent_email: parentEmail.trim() || undefined,
+      address: address.trim() || undefined,
+      avatar: avatar || undefined,
+      photo_url: avatar || undefined,
+      status: 'active',
+      notes: notes.trim() || undefined,
+      rollNumber: rollNumber || undefined,
+      matricule: rollNumber || undefined,
+      admissionDate: new Date().toISOString().slice(0, 10),
+    };
+
+    try {
+      if (studentToEdit) {
+        const result = await updateStudent({
+          ...studentToEdit,
+          ...studentPayload,
+          name: `${firstName.trim()} ${lastName.trim()}`,
+          id: studentToEdit.id,
+          attendanceRate: studentToEdit.attendanceRate ?? 96,
+          averageGrade: studentToEdit.averageGrade ?? 15.0,
+        });
+        if (!result.success) {
+          setSubmitError(result.error || 'Erreur lors de la modification.');
+          setIsSubmitting(false);
+          return;
+        }
+      } else {
+        const result = await addStudent({
+          ...studentPayload,
+          name: `${firstName.trim()} ${lastName.trim()}`,
+          attendanceRate: 96,
+          averageGrade: 15.0,
+        });
+        if (!result.success) {
+          setSubmitError(result.error || "Erreur lors de l'ajout de l'élève.");
+          setIsSubmitting(false);
+          return;
+        }
+      }
+      onClose();
+    } catch (err: any) {
+      setSubmitError(err?.message || 'Une erreur inattendue est survenue.');
+      setIsSubmitting(false);
     }
-    onClose();
   };
 
   return (
@@ -144,47 +189,92 @@ export const StudentModal: React.FC<StudentModalProps> = ({ isOpen, onClose, stu
           </button>
         </div>
 
+        {submitError && (
+          <div className="mt-3 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{submitError}</span>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs" noValidate>
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block font-semibold text-gray-700">Nom et Prénom *</label>
-              {touched.name && !errors.name && name.trim().length >= 3 && (
-                <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" /> Valide
-                </span>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block font-semibold text-gray-700">Prénom *</label>
+                {touched.firstName && !errors.firstName && firstName.trim().length >= 2 && (
+                  <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" /> Valide
+                  </span>
+                )}
+              </div>
+              <input
+                type="text"
+                required
+                value={firstName}
+                onChange={(e) => {
+                  setFirstName(e.target.value);
+                  if (touched.firstName) {
+                    setErrors((prev) => ({
+                      ...prev,
+                      firstName: !e.target.value.trim() ? 'Le prénom est obligatoire.' :
+                        e.target.value.trim().length < 2 ? 'Au moins 2 caractères.' : undefined,
+                    }));
+                  }
+                }}
+                onBlur={() => setTouched((prev) => ({ ...prev, firstName: true }))}
+                placeholder="ex: Alexandre"
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm transition-all ${
+                  errors.firstName
+                    ? 'bg-rose-50/50 border-2 border-rose-400 text-rose-900 focus:outline-none focus:ring-2 focus:ring-rose-400/30'
+                    : 'bg-white/90 border border-teal-900/10 text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#00818c]/30'
+                }`}
+              />
+              {errors.firstName && (
+                <div className="mt-1.5 p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-1.5 animate-in fade-in">
+                  <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                  <span>{errors.firstName}</span>
+                </div>
               )}
             </div>
-            <input
-              type="text"
-              required
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                if (touched.name) {
-                  setErrors((prev) => ({
-                    ...prev,
-                    name: !e.target.value.trim()
-                      ? 'Le nom et prénom sont obligatoires.'
-                      : e.target.value.trim().length < 3
-                      ? 'Le nom doit comporter au moins 3 caractères.'
-                      : undefined,
-                  }));
-                }
-              }}
-              onBlur={() => setTouched((prev) => ({ ...prev, name: true }))}
-              placeholder="ex: Alexandre Dupont"
-              className={`w-full px-3.5 py-2.5 rounded-xl text-sm transition-all ${
-                errors.name
-                  ? 'bg-rose-50/50 border-2 border-rose-400 text-rose-900 focus:outline-none focus:ring-2 focus:ring-rose-400/30'
-                  : 'bg-white/90 border border-teal-900/10 text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#00818c]/30'
-              }`}
-            />
-            {errors.name && (
-              <div className="mt-1.5 p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-1.5 animate-in fade-in">
-                <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                <span>{errors.name}</span>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block font-semibold text-gray-700">Nom *</label>
+                {touched.lastName && !errors.lastName && lastName.trim().length >= 2 && (
+                  <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" /> Valide
+                  </span>
+                )}
               </div>
-            )}
+              <input
+                type="text"
+                required
+                value={lastName}
+                onChange={(e) => {
+                  setLastName(e.target.value);
+                  if (touched.lastName) {
+                    setErrors((prev) => ({
+                      ...prev,
+                      lastName: !e.target.value.trim() ? 'Le nom est obligatoire.' :
+                        e.target.value.trim().length < 2 ? 'Au moins 2 caractères.' : undefined,
+                    }));
+                  }
+                }}
+                onBlur={() => setTouched((prev) => ({ ...prev, lastName: true }))}
+                placeholder="ex: Dupont"
+                className={`w-full px-3.5 py-2.5 rounded-xl text-sm transition-all ${
+                  errors.lastName
+                    ? 'bg-rose-50/50 border-2 border-rose-400 text-rose-900 focus:outline-none focus:ring-2 focus:ring-rose-400/30'
+                    : 'bg-white/90 border border-teal-900/10 text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#00818c]/30'
+                }`}
+              />
+              {errors.lastName && (
+                <div className="mt-1.5 p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold flex items-center gap-1.5 animate-in fade-in">
+                  <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                  <span>{errors.lastName}</span>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -207,6 +297,7 @@ export const StudentModal: React.FC<StudentModalProps> = ({ isOpen, onClose, stu
                     : 'bg-white/90 border border-teal-900/10 text-gray-900'
                 }`}
               >
+                <option value="">— Choisir une classe —</option>
                 {classes.map((cls) => (
                   <option key={cls.id} value={cls.id}>
                     {cls.name}
@@ -269,7 +360,7 @@ export const StudentModal: React.FC<StudentModalProps> = ({ isOpen, onClose, stu
                   setErrors((prev) => ({
                     ...prev,
                     email: !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.target.value.trim())
-                      ? 'Format d\'adresse email invalide.'
+                      ? "Format d'adresse email invalide."
                       : undefined,
                   }));
                 }
@@ -346,9 +437,10 @@ export const StudentModal: React.FC<StudentModalProps> = ({ isOpen, onClose, stu
             </button>
             <button
               type="submit"
-              className="px-5 py-2 bg-[#00818c] hover:bg-[#006e77] text-white font-bold rounded-xl shadow-md"
+              disabled={isSubmitting}
+              className="px-5 py-2 bg-[#00818c] hover:bg-[#006e77] text-white font-bold rounded-xl shadow-md disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {studentToEdit ? 'Enregistrer' : 'Inscrire'}
+              {isSubmitting ? 'Enregistrement...' : studentToEdit ? 'Enregistrer' : 'Inscrire'}
             </button>
           </div>
         </form>

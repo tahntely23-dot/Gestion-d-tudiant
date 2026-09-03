@@ -10,7 +10,7 @@ export interface UserProfile {
   full_name: string;
   email: string;
   avatar_url?: string;
-  role: string;
+  role: UserRole;
   created_at: string;
   provider?: 'google' | 'facebook' | 'email';
   updated_at?: string;
@@ -41,6 +41,11 @@ export interface Student {
   address: string;
   photo_url?: string | null;
   class_name: string;
+  // Supabase columns (real column names)
+  class_id?: string | null;
+  parent_name?: string | null;
+  parent_phone?: string | null;
+  parent_email?: string | null;
   academic_year?: string | null;
   enrollment_date?: string | null;
   status: StudentStatus;
@@ -53,7 +58,7 @@ export interface Student {
   avatar: string;
   rollNumber: string;
   dateOfBirth: string;
-  classId?: string;
+  classId?: string | null;
   parentName?: string;
   parentPhone?: string;
   parentEmail?: string;
