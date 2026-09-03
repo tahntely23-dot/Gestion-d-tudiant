@@ -30,20 +30,34 @@ export interface AuthUser {
 
 export interface Student {
   id: string;
-  name: string;
+  matricule: string;
+  first_name: string;
+  last_name: string;
+  birth_date?: string | null;
+  birth_place?: string | null;
+  gender: 'M' | 'F' | 'Autre';
   email: string;
-  classId: string;
+  phone?: string | null;
+  address: string;
+  photo_url?: string | null;
+  class_name: string;
+  academic_year?: string | null;
+  enrollment_date?: string | null;
+  status: StudentStatus;
+  created_at?: string;
+  updated_at?: string;
+
+  // Compatibility aliases for existing UI components
+  name: string;
   className: string;
   avatar: string;
   rollNumber: string;
   dateOfBirth: string;
-  gender: 'M' | 'F' | 'Autre';
-  parentName: string;
-  parentPhone: string;
-  parentEmail: string;
-  address: string;
-  status: StudentStatus;
-  admissionDate: string;
+  classId?: string;
+  parentName?: string;
+  parentPhone?: string;
+  parentEmail?: string;
+  admissionDate?: string;
   attendanceRate: number;
   averageGrade: number;
   notes?: string;

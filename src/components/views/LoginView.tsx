@@ -46,6 +46,7 @@ export const LoginView: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<'google' | 'facebook' | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // Validation States
   const [fieldErrors, setFieldErrors] = useState<{
@@ -150,22 +151,24 @@ export const LoginView: React.FC = () => {
     e.preventDefault();
     setTouchedFields({ email: true, password: true });
 
-    const isEmailValid = email.trim() && validateEmailFormat(email);
+    const cleanEmail = email.trim().toLowerCase();
+    const isEmailValid = cleanEmail && validateEmailFormat(cleanEmail);
     const isPassValid = password && password.length >= 6;
 
     if (!isEmailValid || !isPassValid) {
       setFieldErrors({
-        email: !email.trim() ? 'Veuillez renseigner votre adresse email.' : (!isEmailValid ? 'Format d\'adresse email invalide.' : undefined),
+        email: !cleanEmail ? 'Veuillez renseigner votre adresse email.' : (!isEmailValid ? 'Format d\'adresse email invalide.' : undefined),
         password: !password ? 'Veuillez saisir votre mot de passe.' : (password.length < 6 ? 'Le mot de passe doit comporter au moins 6 caractères.' : undefined),
       });
       return;
     }
 
     setErrorMessage(null);
+    setSuccessMessage(null);
     setIsLoading(true);
 
     try {
-      const result = await login(email, password);
+      const result = await login(cleanEmail, password);
       if (result.success) {
         confetti({
           particleCount: 50,
@@ -173,10 +176,10 @@ export const LoginView: React.FC = () => {
           origin: { y: 0.6 },
         });
       } else {
-        setErrorMessage(result.error || 'Email ou mot de passe incorrect.');
+        setErrorMessage(result.error || 'Adresse email ou mot de passe incorrect.');
       }
-    } catch (err) {
-      setErrorMessage('Email ou mot de passe incorrect.');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Adresse email ou mot de passe incorrect.');
     } finally {
       setIsLoading(false);
     }
@@ -192,8 +195,10 @@ export const LoginView: React.FC = () => {
       confirmPassword: true,
     });
 
-    const isNameValid = fullName.trim().length >= 3;
-    const isEmailValid = registerEmail.trim() && validateEmailFormat(registerEmail);
+    const cleanFullName = fullName.trim();
+    const cleanEmail = registerEmail.trim().toLowerCase();
+    const isNameValid = cleanFullName.length >= 3;
+    const isEmailValid = cleanEmail && validateEmailFormat(cleanEmail);
     const isPassValid = registerPassword.length >= 6;
     const isConfirmValid = registerPassword === confirmPassword;
 
@@ -208,21 +213,32 @@ export const LoginView: React.FC = () => {
     }
 
     setErrorMessage(null);
+    setSuccessMessage(null);
     setIsLoading(true);
 
     try {
-      const result = await signup(registerEmail, registerPassword, fullName);
+      const result = await signup(cleanEmail, registerPassword, cleanFullName);
       if (result.success) {
         confetti({
           particleCount: 60,
           spread: 70,
           origin: { y: 0.6 },
         });
+
+        if (result.needsConfirmation) {
+          setSuccessMessage(
+            "Compte créé avec succès ! Un email de confirmation a été envoyé à votre adresse. Veuillez confirmer votre adresse email avant de vous connecter."
+          );
+          setEmail(cleanEmail);
+          setRegisterPassword('');
+          setConfirmPassword('');
+          setMode('login');
+        }
       } else {
         setErrorMessage(result.error || 'Impossible de créer le compte. Veuillez réessayer.');
       }
-    } catch (err) {
-      setErrorMessage('Une erreur est survenue lors de l\'inscription.');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Une erreur est survenue lors de l\'inscription.');
     } finally {
       setIsLoading(false);
     }
@@ -231,28 +247,19 @@ export const LoginView: React.FC = () => {
   // OAuth Handler (Google / Facebook)
   const handleOAuth = async (provider: 'google' | 'facebook') => {
     setErrorMessage(null);
+    setSuccessMessage(null);
     setOauthLoading(provider);
 
     try {
       const result = await loginWithOAuth(provider);
-      if (result.success) {
-        confetti({
-          particleCount: 50,
-          spread: 60,
-          origin: { y: 0.6 },
-        });
-      } else if (result.error) {
-        setErrorMessage(
-          provider === 'google'
-            ? 'Connexion Google impossible. Veuillez réessayer.'
-            : 'Connexion Facebook impossible. Veuillez réessayer.'
-        );
+      if (result?.error) {
+        setErrorMessage(result.error);
       }
-    } catch (err) {
+    } catch (err: any) {
       setErrorMessage(
-        provider === 'google'
+        err?.message || (provider === 'google'
           ? 'Connexion Google impossible. Veuillez réessayer.'
-          : 'Connexion Facebook impossible. Veuillez réessayer.'
+          : 'Connexion Facebook impossible. Veuillez réessayer.')
       );
     } finally {
       setOauthLoading(null);
@@ -447,15 +454,30 @@ export const LoginView: React.FC = () => {
               </p>
             </div>
 
+            {/* Global Success Alert Banner */}
+            {successMessage && (
+              <div className="mb-5 p-3.5 rounded-2xl bg-emerald-50/90 border border-emerald-200 text-emerald-800 text-xs font-semibold flex items-start gap-2.5 animate-in fade-in slide-in-from-top-1 shadow-2xs">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <span className="flex-1 leading-relaxed">{successMessage}</span>
+                <button
+                  type="button"
+                  onClick={() => setSuccessMessage(null)}
+                  className="text-emerald-500 hover:text-emerald-800 font-bold px-1 cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
             {/* Global Error Alert Banner */}
             {errorMessage && (
-              <div className="mb-5 p-3.5 rounded-2xl bg-rose-50 border border-rose-200/80 text-rose-700 text-xs font-semibold flex items-center gap-2.5 animate-in fade-in slide-in-from-top-1">
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                <span className="flex-1">{errorMessage}</span>
+              <div className="mb-5 p-3.5 rounded-2xl bg-rose-50/90 border border-rose-200/80 text-rose-700 text-xs font-semibold flex items-start gap-2.5 animate-in fade-in slide-in-from-top-1 shadow-2xs">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <span className="flex-1 leading-relaxed">{errorMessage}</span>
                 <button
                   type="button"
                   onClick={() => setErrorMessage(null)}
-                  className="text-rose-400 hover:text-rose-700 font-bold px-1"
+                  className="text-rose-400 hover:text-rose-700 font-bold px-1 cursor-pointer"
                 >
                   ✕
                 </button>
@@ -926,6 +948,7 @@ export const LoginView: React.FC = () => {
                     onClick={() => {
                       setMode('register');
                       setErrorMessage(null);
+                      setSuccessMessage(null);
                     }}
                     className="font-bold text-[#1597A3] hover:text-[#107680] hover:underline cursor-pointer transition-colors ml-1"
                   >
@@ -940,6 +963,7 @@ export const LoginView: React.FC = () => {
                     onClick={() => {
                       setMode('login');
                       setErrorMessage(null);
+                      setSuccessMessage(null);
                     }}
                     className="font-bold text-[#1597A3] hover:text-[#107680] hover:underline cursor-pointer transition-colors ml-1"
                   >

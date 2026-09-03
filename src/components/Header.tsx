@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useSchool } from '../context/SchoolContext';
 import { Search, Bell, Plus, Check, Trash2, LogOut, User, ChevronDown, Sparkles, Shield, GraduationCap } from 'lucide-react';
-import { DEMO_USERS } from '../data/mockData';
 
 interface HeaderProps {
   onOpenAddModal: () => void;
@@ -17,7 +16,6 @@ export const Header: React.FC<HeaderProps> = ({ onOpenAddModal }) => {
     activeTab,
     currentUser,
     logout,
-    quickLogin,
     setActiveTab,
   } = useSchool();
   const [showNotifications, setShowNotifications] = useState(false);

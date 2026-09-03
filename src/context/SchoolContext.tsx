@@ -9,7 +9,6 @@ import {
   INITIAL_TEACHERS,
   INITIAL_SCHEDULE,
   INITIAL_NOTIFICATIONS,
-  DEMO_USERS,
 } from '../data/mockData';
 import {
   supabase,
@@ -20,8 +19,11 @@ import {
   signOutSupabase,
   syncOrCreateProfile,
   profileToAuthUser,
-  getLocalProfiles,
   resetPasswordForEmail,
+  fetchStudentsFromSupabase,
+  createStudentInSupabase,
+  updateStudentInSupabase,
+  deleteStudentInSupabase,
 } from '../lib/supabase';
 
 interface SchoolContextType {
@@ -35,17 +37,19 @@ interface SchoolContextType {
   // Auth
   currentUser: AuthUser | null;
   isAuthenticated: boolean;
+  authLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string; user?: AuthUser }>;
-  signup: (email: string, password: string, fullName: string) => Promise<{ success: boolean; error?: string; user?: AuthUser }>;
-  loginWithOAuth: (provider: 'google' | 'facebook') => Promise<{ success: boolean; error?: string; user?: AuthUser }>;
+  signup: (email: string, password: string, fullName: string) => Promise<{ success: boolean; error?: string; needsConfirmation?: boolean; user?: AuthUser }>;
+  loginWithOAuth: (provider: 'google' | 'facebook') => Promise<{ success: boolean; error?: string }>;
   resetPassword: (email: string) => Promise<{ success: boolean; error?: string }>;
-  quickLogin: (userId: string) => void;
-  logout: () => void;
-  expireSession: () => void;
+  logout: () => Promise<void>;
   userProfiles: UserProfile[];
 
   // Data
   students: Student[];
+  studentsLoading: boolean;
+  studentsError: string | null;
+  refreshStudents: () => Promise<void>;
   classes: ClassRoom[];
   subjects: Subject[];
   grades: Grade[];
@@ -55,9 +59,9 @@ interface SchoolContextType {
   notifications: SchoolNotification[];
   
   // Actions
-  addStudent: (student: Omit<Student, 'id' | 'averageGrade' | 'attendanceRate'>) => void;
-  updateStudent: (student: Student) => void;
-  deleteStudent: (id: string) => void;
+  addStudent: (student: Partial<Student>) => Promise<{ success: boolean; data?: Student; error?: string }>;
+  updateStudent: (student: Student) => Promise<{ success: boolean; data?: Student; error?: string }>;
+  deleteStudent: (id: string) => Promise<{ success: boolean; error?: string }>;
   
   addClass: (cls: Omit<ClassRoom, 'id' | 'studentCount'>) => void;
   updateClass: (cls: ClassRoom) => void;
@@ -96,185 +100,151 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [selectedClassId, setSelectedClassId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
-  const [userProfiles, setUserProfiles] = useState<UserProfile[]>(() => getLocalProfiles());
+  const [userProfiles, setUserProfiles] = useState<UserProfile[]>([]);
 
-  // Authentication State
-  const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
-    const savedUser = localStorage.getItem('eduglass_auth_user');
-    if (savedUser) {
-      try {
-        return JSON.parse(savedUser);
-      } catch (e) {
-        return DEMO_USERS[0];
-      }
-    }
-    return null; // Start at login page if not logged in
-  });
+  // Authentication State - Pure Supabase
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
 
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return localStorage.getItem('eduglass_is_authenticated') === 'true';
-  });
-
-  // Supabase Auth state change listener (Handles OAuth redirects & token refreshes)
+  // Initialize session and subscribe to Supabase Auth state changes
   useEffect(() => {
-    if (!supabase || !isSupabaseConfigured) return;
+    let isMounted = true;
 
+    const initAuth = async () => {
+      try {
+        console.log('[Auth Init] Vérification de la session active avec Supabase getSession()...');
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+          console.warn('[Auth Init] Erreur getSession:', error.message);
+        }
+
+        if (session?.user && isMounted) {
+          console.log('[Auth Init] Session existante trouvée pour user:', session.user.id);
+          const profile = await syncOrCreateProfile(session.user);
+          const authUser = profileToAuthUser(profile);
+          setCurrentUser(authUser);
+          setIsAuthenticated(true);
+        } else if (isMounted) {
+          console.log('[Auth Init] Aucune session active. Utilisateur non connecté.');
+          setCurrentUser(null);
+          setIsAuthenticated(false);
+        }
+      } catch (err) {
+        console.error('[Auth Init] Exception lors de la vérification de session:', err);
+        if (isMounted) {
+          setCurrentUser(null);
+          setIsAuthenticated(false);
+        }
+      } finally {
+        if (isMounted) {
+          setAuthLoading(false);
+        }
+      }
+    };
+
+    initAuth();
+
+    // Supabase Auth State Change Listener (OAuth, Login, Logout, Token Refresh)
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (session?.user) {
-        const profile = await syncOrCreateProfile({
-          id: session.user.id,
-          email: session.user.email,
-          user_metadata: session.user.user_metadata,
-          provider: (session.user.app_metadata?.provider as any) || 'email',
-        });
+      console.log(`[Supabase onAuthStateChange] Événement: ${event}, Session présente:`, Boolean(session));
+      
+      if (session?.user && isMounted) {
+        const profile = await syncOrCreateProfile(session.user);
         const authUser = profileToAuthUser(profile);
         setCurrentUser(authUser);
         setIsAuthenticated(true);
-        localStorage.setItem('eduglass_auth_user', JSON.stringify(authUser));
-        localStorage.setItem('eduglass_is_authenticated', 'true');
-        setUserProfiles(getLocalProfiles());
-      } else if (event === 'SIGNED_OUT') {
+      } else if ((event === 'SIGNED_OUT' || !session) && isMounted) {
         setCurrentUser(null);
         setIsAuthenticated(false);
-        localStorage.removeItem('eduglass_auth_user');
-        localStorage.setItem('eduglass_is_authenticated', 'false');
       }
     });
 
     return () => {
-      authListener.subscription.unsubscribe();
+      isMounted = false;
+      authListener?.subscription?.unsubscribe();
     };
   }, []);
 
-  // Login with Email/Password
+  // Login with Email/Password using pure Supabase Auth
   const login = async (email: string, password: string): Promise<{ success: boolean; error?: string; user?: AuthUser }> => {
-    // Artificial slight network delay for realism
-    await new Promise((res) => setTimeout(res, 350));
-
-    // 1. Check Demo Accounts first for instant demonstration
-    const matched = DEMO_USERS.find(
-      (u) => u.email.toLowerCase().trim() === email.toLowerCase().trim()
-    );
-
-    if (matched) {
-      if (matched.password === password || password === 'admin' || password === 'demo' || password === '123456' || password === 'password123') {
-        const userObj: AuthUser = {
-          id: matched.id,
-          name: matched.name,
-          email: matched.email,
-          role: matched.role,
-          roleLabel: matched.roleLabel,
-          title: matched.title,
-          department: matched.department,
-          avatar: matched.avatar,
-          provider: 'email',
-        };
-        // Also register in profiles store
-        await syncOrCreateProfile({
-          id: matched.id,
-          email: matched.email,
-          user_metadata: { full_name: matched.name, avatar_url: matched.avatar },
-          provider: 'email',
-        });
-        setCurrentUser(userObj);
-        setIsAuthenticated(true);
-        localStorage.setItem('eduglass_auth_user', JSON.stringify(userObj));
-        localStorage.setItem('eduglass_is_authenticated', 'true');
-        setUserProfiles(getLocalProfiles());
-        return { success: true, user: userObj };
-      } else {
-        return { success: false, error: 'Mot de passe incorrect. (Indice: password123)' };
-      }
-    }
-
-    // 2. Real Supabase or local auth
     const result = await signInWithEmailPassword(email, password);
     if (result.success && result.user) {
       setCurrentUser(result.user);
       setIsAuthenticated(true);
-      localStorage.setItem('eduglass_auth_user', JSON.stringify(result.user));
-      localStorage.setItem('eduglass_is_authenticated', 'true');
-      setUserProfiles(getLocalProfiles());
       return { success: true, user: result.user };
     }
-
-    return { success: false, error: result.error || 'Identifiant non reconnu. Veuillez vérifier vos accès.' };
+    return { success: false, error: result.error || 'Identifiants incorrects.' };
   };
 
-  // Sign Up with Email/Password
-  const signup = async (email: string, password: string, fullName: string): Promise<{ success: boolean; error?: string; user?: AuthUser }> => {
-    await new Promise((res) => setTimeout(res, 400));
+  // Sign Up with Email/Password using pure Supabase Auth
+  const signup = async (
+    email: string,
+    password: string,
+    fullName: string
+  ): Promise<{ success: boolean; error?: string; needsConfirmation?: boolean; user?: AuthUser }> => {
     const result = await signUpWithEmailPassword(email, password, fullName);
-    if (result.success && result.user) {
-      setCurrentUser(result.user);
-      setIsAuthenticated(true);
-      localStorage.setItem('eduglass_auth_user', JSON.stringify(result.user));
-      localStorage.setItem('eduglass_is_authenticated', 'true');
-      setUserProfiles(getLocalProfiles());
-      return { success: true, user: result.user };
+    if (result.success) {
+      if (result.user && !result.needsConfirmation) {
+        setCurrentUser(result.user);
+        setIsAuthenticated(true);
+      }
+      return result;
     }
-    return { success: false, error: result.error || 'Erreur lors de la création du compte.' };
+    return { success: false, error: result.error || "Erreur lors de la création du compte." };
   };
 
   // OAuth Login (Google / Facebook)
-  const loginWithOAuth = async (provider: 'google' | 'facebook'): Promise<{ success: boolean; error?: string; user?: AuthUser }> => {
-    const result = await signInWithOAuthProvider(provider);
-    if (result.success && result.user) {
-      setCurrentUser(result.user);
-      setIsAuthenticated(true);
-      localStorage.setItem('eduglass_auth_user', JSON.stringify(result.user));
-      localStorage.setItem('eduglass_is_authenticated', 'true');
-      setUserProfiles(getLocalProfiles());
-      return { success: true, user: result.user };
-    }
-    return result;
+  const loginWithOAuth = async (provider: 'google' | 'facebook'): Promise<{ success: boolean; error?: string }> => {
+    return await signInWithOAuthProvider(provider);
   };
 
   const resetPassword = async (email: string): Promise<{ success: boolean; error?: string }> => {
     return await resetPasswordForEmail(email);
   };
 
-  const quickLogin = (userId: string) => {
-    const matched = DEMO_USERS.find((u) => u.id === userId) || DEMO_USERS[0];
-    const userObj: AuthUser = {
-      id: matched.id,
-      name: matched.name,
-      email: matched.email,
-      role: matched.role,
-      roleLabel: matched.roleLabel,
-      title: matched.title,
-      department: matched.department,
-      avatar: matched.avatar,
-      provider: 'email',
-    };
-    setCurrentUser(userObj);
-    setIsAuthenticated(true);
-    localStorage.setItem('eduglass_auth_user', JSON.stringify(userObj));
-    localStorage.setItem('eduglass_is_authenticated', 'true');
-    setUserProfiles(getLocalProfiles());
-  };
-
   const logout = async () => {
     await signOutSupabase();
     setCurrentUser(null);
     setIsAuthenticated(false);
-    localStorage.removeItem('eduglass_auth_user');
-    localStorage.setItem('eduglass_is_authenticated', 'false');
+    setStudents([]);
   };
 
-  // Session expiration simulation (For test case 7)
-  const expireSession = () => {
-    setCurrentUser(null);
-    setIsAuthenticated(false);
-    localStorage.removeItem('eduglass_auth_user');
-    localStorage.setItem('eduglass_is_authenticated', 'false');
+  // 1. Pure Supabase Students State
+  const [students, setStudents] = useState<Student[]>([]);
+  const [studentsLoading, setStudentsLoading] = useState<boolean>(true);
+  const [studentsError, setStudentsError] = useState<string | null>(null);
+
+  const loadStudentsFromSupabase = async () => {
+    setStudentsLoading(true);
+    setStudentsError(null);
+    try {
+      console.log('[SchoolContext] Chargement des élèves depuis Supabase public.students...');
+      const res = await fetchStudentsFromSupabase();
+      if (res.success) {
+        console.log(`[SchoolContext] ${res.data.length} élève(s) chargé(s) depuis Supabase.`);
+        setStudents(res.data);
+      } else {
+        console.warn('[SchoolContext] Échec chargement élèves Supabase:', res.error);
+        setStudentsError(res.error || 'Erreur lors du chargement des élèves.');
+      }
+    } catch (err: any) {
+      console.error('[SchoolContext] Exception chargement élèves:', err);
+      setStudentsError(err?.message || 'Erreur lors du chargement des élèves.');
+    } finally {
+      setStudentsLoading(false);
+    }
   };
 
-  // Initialize from LocalStorage or Defaults
-  const [students, setStudents] = useState<Student[]>(() => {
-    const saved = localStorage.getItem('eduglass_students');
-    return saved ? JSON.parse(saved) : INITIAL_STUDENTS;
-  });
+  // Load students on mount and on authentication
+  useEffect(() => {
+    loadStudentsFromSupabase();
+  }, [isAuthenticated]);
+
+  const refreshStudents = async () => {
+    await loadStudentsFromSupabase();
+  };
 
   const [classes, setClasses] = useState<ClassRoom[]>(() => {
     const saved = localStorage.getItem('eduglass_classes');
@@ -311,11 +281,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return saved ? JSON.parse(saved) : INITIAL_NOTIFICATIONS;
   });
 
-  // Save to LocalStorage
-  useEffect(() => {
-    localStorage.setItem('eduglass_students', JSON.stringify(students));
-  }, [students]);
-
+  // Save other collections to LocalStorage
   useEffect(() => {
     localStorage.setItem('eduglass_classes', JSON.stringify(classes));
   }, [classes]);
@@ -347,7 +313,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // Recalculate student averages and attendance rates dynamically
   const calculateStudentAverage = (studentId: string): number => {
     const studentGrades = grades.filter((g) => g.studentId === studentId);
-    if (studentGrades.length === 0) return 15.0; // default initial
+    if (studentGrades.length === 0) return 15.0;
     let totalScore = 0;
     let totalCoeff = 0;
     studentGrades.forEach((g) => {
@@ -360,45 +326,52 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return totalCoeff > 0 ? parseFloat((totalScore / totalCoeff).toFixed(1)) : 15.0;
   };
 
-  const addStudent = (newStdData: Omit<Student, 'id' | 'averageGrade' | 'attendanceRate'>) => {
-    const id = `std-${Date.now()}`;
-    const targetClass = classes.find((c) => c.id === newStdData.classId);
-    const newStudent: Student = {
-      ...newStdData,
-      id,
-      className: targetClass ? targetClass.name : 'Non assigné',
-      averageGrade: 15.0,
-      attendanceRate: 98,
-    };
-    setStudents((prev) => [newStudent, ...prev]);
-    // update class student count
-    if (newStdData.classId) {
-      setClasses((prev) =>
-        prev.map((c) => (c.id === newStdData.classId ? { ...c, studentCount: c.studentCount + 1 } : c))
-      );
+  // Add student directly to Supabase PostgreSQL
+  const addStudent = async (
+    newStdData: Partial<Student>
+  ): Promise<{ success: boolean; data?: Student; error?: string }> => {
+    const result = await createStudentInSupabase(newStdData);
+    if (result.success && result.data) {
+      setStudents((prev) => [result.data!, ...prev.filter((s) => s.id !== result.data!.id)]);
+      // update class student count
+      const targetClassId = result.data.classId || result.data.class_name;
+      if (targetClassId) {
+        setClasses((prev) =>
+          prev.map((c) => (c.id === targetClassId || c.name === result.data?.class_name ? { ...c, studentCount: c.studentCount + 1 } : c))
+        );
+      }
     }
+    return result;
   };
 
-  const updateStudent = (updatedStudent: Student) => {
-    const targetClass = classes.find((c) => c.id === updatedStudent.classId);
-    const updated: Student = {
-      ...updatedStudent,
-      className: targetClass ? targetClass.name : updatedStudent.className,
-      averageGrade: calculateStudentAverage(updatedStudent.id),
-    };
-    setStudents((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+  // Update student in Supabase PostgreSQL
+  const updateStudent = async (
+    updatedStudent: Student
+  ): Promise<{ success: boolean; data?: Student; error?: string }> => {
+    const result = await updateStudentInSupabase(updatedStudent.id, updatedStudent);
+    if (result.success && result.data) {
+      setStudents((prev) => prev.map((s) => (s.id === updatedStudent.id ? result.data! : s)));
+    }
+    return result;
   };
 
-  const deleteStudent = (id: string) => {
-    const student = students.find((s) => s.id === id);
-    if (student && student.classId) {
-      setClasses((prev) =>
-        prev.map((c) => (c.id === student.classId ? { ...c, studentCount: Math.max(0, c.studentCount - 1) } : c))
-      );
+  // Delete student in Supabase PostgreSQL
+  const deleteStudent = async (
+    id: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const studentToDelete = students.find((s) => s.id === id);
+    const result = await deleteStudentInSupabase(id);
+    if (result.success) {
+      if (studentToDelete) {
+        setClasses((prev) =>
+          prev.map((c) => (c.name === studentToDelete.class_name || c.id === studentToDelete.classId ? { ...c, studentCount: Math.max(0, c.studentCount - 1) } : c))
+        );
+      }
+      setStudents((prev) => prev.filter((s) => s.id !== id));
+      setGrades((prev) => prev.filter((g) => g.studentId !== id));
+      setAttendance((prev) => prev.filter((a) => a.studentId !== id));
     }
-    setStudents((prev) => prev.filter((s) => s.id !== id));
-    setGrades((prev) => prev.filter((g) => g.studentId !== id));
-    setAttendance((prev) => prev.filter((a) => a.studentId !== id));
+    return result;
   };
 
   const addClass = (clsData: Omit<ClassRoom, 'id' | 'studentCount'>) => {
@@ -564,15 +537,17 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setSearchQuery,
         currentUser,
         isAuthenticated,
+        authLoading,
         login,
         signup,
         loginWithOAuth,
         resetPassword,
-        quickLogin,
         logout,
-        expireSession,
         userProfiles,
         students,
+        studentsLoading,
+        studentsError,
+        refreshStudents,
         classes,
         subjects,
         grades,

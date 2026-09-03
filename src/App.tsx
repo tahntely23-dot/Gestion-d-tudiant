@@ -29,7 +29,7 @@ import { Student, ClassRoom, Subject, Teacher } from './types';
 import { Menu } from 'lucide-react';
 
 function MainAppContent() {
-  const { activeTab, setActiveTab, isAuthenticated, currentUser } = useSchool();
+  const { activeTab, setActiveTab, isAuthenticated, currentUser, authLoading } = useSchool();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Modals state (All hooks must be declared before any conditional return)
@@ -48,6 +48,26 @@ function MainAppContent() {
   const [teacherToEdit, setTeacherToEdit] = useState<Teacher | null>(null);
 
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+
+  // While checking Supabase session on startup, display smooth loading
+  if (authLoading) {
+    return (
+      <div
+        className="min-h-screen flex items-center justify-center text-[#1F2937] font-sans"
+        style={{ backgroundColor: '#EAF5F4' }}
+      >
+        <div className="flex flex-col items-center gap-3">
+          <div
+            className="w-12 h-12 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-[#1597A3]/25 animate-pulse"
+            style={{ backgroundColor: '#1597A3' }}
+          >
+            <Menu className="w-6 h-6" />
+          </div>
+          <p className="text-xs font-semibold text-[#1597A3] tracking-wide">Initialisation de la session...</p>
+        </div>
+      </div>
+    );
+  }
 
   // If not authenticated, display login screen
   if (!isAuthenticated || !currentUser) {

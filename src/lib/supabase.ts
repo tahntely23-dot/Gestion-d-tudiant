@@ -1,9 +1,18 @@
-import { createClient, SupabaseClient, User, Session } from '@supabase/supabase-js';
-import { UserProfile, AuthUser } from '../types';
+import { createClient, User, Session, AuthError } from '@supabase/supabase-js';
+import { UserProfile, AuthUser, Student } from '../types';
 
-// Environment variables (Safe public keys only - NO secrets on frontend)
+// Environment variables (Safe public keys only - NO service_role on frontend)
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  console.error('[Supabase Config] Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY in environment variables.');
+}
+
+export const supabase = createClient(
+  SUPABASE_URL || '',
+  SUPABASE_ANON_KEY || ''
+);
 
 export const isSupabaseConfigured = Boolean(
   SUPABASE_URL && 
@@ -12,154 +21,73 @@ export const isSupabaseConfigured = Boolean(
   !SUPABASE_ANON_KEY.includes('your-anon')
 );
 
-// Real Supabase client instance (or null if unconfigured)
-export const supabase: SupabaseClient | null = isSupabaseConfigured
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: {
-        autoRefreshToken: true,
-        persistSession: true,
-        detectSessionInUrl: true,
-      },
-    })
-  : null;
-
-// Local persistent profile store key for local caching & fallback
-const PROFILES_STORAGE_KEY = 'eduglass_supabase_profiles';
-const ACTIVE_SESSION_STORAGE_KEY = 'eduglass_supabase_session';
-
 /**
- * Get all profiles cached or stored locally
+ * Format and translate Supabase Auth errors into clear, human-friendly French messages
  */
-export function getLocalProfiles(): UserProfile[] {
-  try {
-    const raw = localStorage.getItem(PROFILES_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch (e) {
-    return [];
-  }
-}
+export function formatSupabaseAuthError(error: any): string {
+  if (!error) return 'Une erreur inconnue est survenue.';
 
-/**
- * Save profiles to local store
- */
-export function saveLocalProfiles(profiles: UserProfile[]): void {
-  try {
-    localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(profiles));
-  } catch (e) {
-    console.error('Failed to save profiles locally', e);
-  }
-}
+  const message = error.message || error.error_description || String(error);
+  const code = error.code || '';
 
-/**
- * Ensures a user has a profile in `profiles`.
- * Creates the record if it doesn't exist.
- * Rule: Default role is strictly 'user'. NEVER auto-admin.
- */
-export async function syncOrCreateProfile(user: {
-  id: string;
-  email?: string;
-  user_metadata?: Record<string, any>;
-  provider?: 'google' | 'facebook' | 'email';
-}): Promise<UserProfile> {
-  const email = (user.email || '').toLowerCase().trim();
-  const rawName = user.user_metadata?.full_name || 
-                 user.user_metadata?.name || 
-                 user.user_metadata?.given_name || 
-                 (email ? email.split('@')[0].replace('.', ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Utilisateur');
-  
-  const rawAvatar = user.user_metadata?.avatar_url || 
-                    user.user_metadata?.picture || 
-                    `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80`;
-
-  const provider = user.provider || 
-                  (user.user_metadata?.provider as ('google' | 'facebook' | 'email')) || 
-                  'email';
-
-  // 1. Try real Supabase if available
-  if (supabase && isSupabaseConfigured) {
-    try {
-      // Check if profile exists by ID
-      const { data: existingProfile, error: fetchErr } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user.id)
-        .maybeSingle();
-
-      if (existingProfile && !fetchErr) {
-        return existingProfile as UserProfile;
-      }
-
-      // If not by ID, check by email to prevent duplicate accounts
-      if (email) {
-        const { data: profileByEmail } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('email', email)
-          .maybeSingle();
-
-        if (profileByEmail) {
-          return profileByEmail as UserProfile;
-        }
-      }
-
-      // Insert new profile with STRICT default role = 'user'
-      const newProfile: UserProfile = {
-        id: user.id,
-        full_name: rawName,
-        email: email,
-        avatar_url: rawAvatar,
-        role: 'user', // Strict requirement: Default role must be 'user'
-        created_at: new Date().toISOString(),
-        provider: provider,
-      };
-
-      const { data: inserted, error: insertErr } = await supabase
-        .from('profiles')
-        .insert(newProfile)
-        .select()
-        .single();
-
-      if (inserted && !insertErr) {
-        return inserted as UserProfile;
-      }
-    } catch (err) {
-      console.warn('Supabase profiles query error, falling back to client profile store:', err);
-    }
+  if (
+    code === 'invalid_credentials' ||
+    message.includes('Invalid login credentials') ||
+    message.includes('invalid login credentials') ||
+    message.includes('invalid_grant')
+  ) {
+    return 'Adresse email ou mot de passe incorrect.';
   }
 
-  // 2. Client Profile Store (Simulated Supabase DB)
-  const allProfiles = getLocalProfiles();
-
-  // Check if profile already exists by ID or by email
-  const existing = allProfiles.find(
-    (p) => p.id === user.id || (email && p.email?.toLowerCase() === email)
-  );
-
-  if (existing) {
-    return existing;
+  if (
+    code === 'email_not_confirmed' ||
+    message.includes('Email not confirmed') ||
+    message.includes('email_not_confirmed')
+  ) {
+    return "Adresse email non confirmée. Un email de confirmation vous a été envoyé lors de l'inscription. Veuillez vérifier votre boîte de réception avant de vous connecter.";
   }
 
-  // Create new profile record
-  const newProfile: UserProfile = {
-    id: user.id || `usr_sub_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-    full_name: rawName,
-    email: email,
-    avatar_url: rawAvatar,
-    role: 'user', // STRICT: role is default 'user', never admin
-    created_at: new Date().toISOString(),
-    provider: provider,
-  };
+  if (
+    code === 'user_already_exists' ||
+    message.includes('User already registered') ||
+    message.includes('already registered') ||
+    message.includes('already exists')
+  ) {
+    return 'Cette adresse email est déjà enregistrée. Veuillez vous connecter ou réinitialiser votre mot de passe.';
+  }
 
-  allProfiles.push(newProfile);
-  saveLocalProfiles(allProfiles);
-  return newProfile;
+  if (
+    code === 'weak_password' ||
+    message.includes('Password should be at least') ||
+    message.includes('password is too short')
+  ) {
+    return 'Le mot de passe doit comporter au moins 6 caractères.';
+  }
+
+  if (
+    code === 'email_address_invalid' ||
+    message.includes('Email address') && message.includes('is invalid')
+  ) {
+    return "Format d'adresse email invalide ou domaine non autorisé.";
+  }
+
+  if (
+    code === 'over_email_send_rate_limit' ||
+    code === 'over_request_rate_limit' ||
+    error.status === 429 ||
+    message.includes('rate limit') ||
+    message.includes('Too many requests')
+  ) {
+    return 'Limite d’envoi d’emails atteinte par le serveur Supabase. Veuillez patienter quelques minutes avant de réessayer.';
+  }
+
+  return message;
 }
 
 /**
  * Converts a UserProfile into application's AuthUser representation
  */
 export function profileToAuthUser(profile: UserProfile): AuthUser {
-  // Map role to French label & UI role
   const role = (profile.role === 'admin' || profile.role === 'direction' || profile.role === 'teacher' || profile.role === 'student' || profile.role === 'staff')
     ? profile.role
     : 'user';
@@ -187,224 +115,545 @@ export function profileToAuthUser(profile: UserProfile): AuthUser {
 }
 
 /**
- * Execute OAuth Sign-In (Google or Facebook)
+ * Ensures a user has a profile in `profiles`.
+ * Creates the record if it doesn't exist.
+ * Rule: Default role is strictly 'user'. NEVER auto-admin or auto-teacher on signup.
+ */
+export async function syncOrCreateProfile(user: {
+  id: string;
+  email?: string;
+  user_metadata?: Record<string, any>;
+  app_metadata?: Record<string, any>;
+  provider?: 'google' | 'facebook' | 'email';
+}): Promise<UserProfile> {
+  const email = (user.email || '').toLowerCase().trim();
+  const rawName = user.user_metadata?.full_name || 
+                 user.user_metadata?.name || 
+                 user.user_metadata?.given_name || 
+                 (email ? email.split('@')[0].replace('.', ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Utilisateur');
+  
+  const rawAvatar = user.user_metadata?.avatar_url || 
+                    user.user_metadata?.picture || 
+                    `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80`;
+
+  const provider = user.provider || 
+                  (user.app_metadata?.provider as ('google' | 'facebook' | 'email')) || 
+                  (user.user_metadata?.provider as ('google' | 'facebook' | 'email')) || 
+                  'email';
+
+  const defaultProfile: UserProfile = {
+    id: user.id,
+    full_name: rawName,
+    email: email,
+    avatar_url: rawAvatar,
+    role: 'user', // STRICT: Default role must always be 'user'
+    created_at: new Date().toISOString(),
+    provider: provider,
+  };
+
+  if (!supabase || !isSupabaseConfigured) {
+    return defaultProfile;
+  }
+
+  try {
+    // 1. Check if profile exists by ID in Supabase
+    const { data: existingProfile, error: fetchErr } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (existingProfile && !fetchErr) {
+      return existingProfile as UserProfile;
+    }
+
+    // 2. If not found, insert/upsert new profile with role = 'user'
+    const { data: inserted, error: insertErr } = await supabase
+      .from('profiles')
+      .upsert(defaultProfile)
+      .select()
+      .maybeSingle();
+
+    if (inserted && !insertErr) {
+      console.log('[Supabase Profiles] Profil synchronisé avec succès pour user:', user.id);
+      return inserted as UserProfile;
+    }
+
+    if (insertErr) {
+      console.warn('[Supabase Profiles] Notice upsert profil:', insertErr.message);
+    }
+  } catch (err: any) {
+    console.warn('[Supabase Profiles] Exception synchronisation profil:', err.message || err);
+  }
+
+  return defaultProfile;
+}
+
+/**
+ * Execute OAuth Sign-In (Google or Facebook) with Supabase Auth
  */
 export async function signInWithOAuthProvider(provider: 'google' | 'facebook'): Promise<{
   success: boolean;
   error?: string;
-  user?: AuthUser;
 }> {
-  // 1. If real Supabase is configured, trigger official Supabase OAuth flow
-  if (supabase && isSupabaseConfigured) {
-    try {
-      const redirectUrl = window.location.origin;
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: provider,
-        options: {
-          redirectTo: redirectUrl,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
-        },
-      });
-
-      if (error) {
-        return { success: false, error: error.message };
-      }
-
-      // If browser redirects directly, this succeeds
-      return { success: true };
-    } catch (e: any) {
-      return { success: false, error: e.message || 'Erreur lors de la redirection OAuth' };
-    }
+  if (!supabase || !isSupabaseConfigured) {
+    return { success: false, error: 'Client Supabase non configuré.' };
   }
 
-  // 2. Interactive OAuth Flow Simulation (For preview & testing)
-  // Provides authentic Google / Facebook identity extraction, profile creation, and validation
-  return new Promise((resolve) => {
-    setTimeout(async () => {
-      const mockEmail = provider === 'google' 
-        ? 'alex.dupont.google@gmail.com' 
-        : 'marie.laurent.fb@facebook.com';
-      
-      const mockName = provider === 'google' 
-        ? 'Alexandre Dupont (Google)' 
-        : 'Marie Laurent (Facebook)';
+  try {
+    console.log(`[Supabase Auth] Démarrage OAuth ${provider}...`);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: provider,
+      options: {
+        redirectTo: window.location.origin,
+      },
+    });
 
-      const mockAvatar = provider === 'google'
-        ? 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80'
-        : 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&auto=format&fit=crop&q=80';
+    if (error) {
+      console.error(`[Supabase Auth] Erreur OAuth ${provider}:`, error.message);
+      return { success: false, error: formatSupabaseAuthError(error) };
+    }
 
-      const userProfile = await syncOrCreateProfile({
-        id: `oauth_${provider}_${Date.now()}`,
-        email: mockEmail,
-        provider: provider,
-        user_metadata: {
-          full_name: mockName,
-          name: mockName,
-          avatar_url: mockAvatar,
-          provider: provider,
-        },
-      });
-
-      const authUser = profileToAuthUser(userProfile);
-      localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(authUser));
-      
-      resolve({
-        success: true,
-        user: authUser,
-      });
-    }, 600);
-  });
+    return { success: true };
+  } catch (e: any) {
+    console.error(`[Supabase Auth] Exception OAuth ${provider}:`, e);
+    return { success: false, error: formatSupabaseAuthError(e) };
+  }
 }
 
 /**
- * Sign in with Email and Password
+ * Sign in with Email and Password using Supabase Auth
  */
 export async function signInWithEmailPassword(
   email: string,
   password: string
 ): Promise<{ success: boolean; error?: string; user?: AuthUser }> {
-  // 1. Real Supabase
-  if (supabase && isSupabaseConfigured) {
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+  const cleanEmail = email.trim().toLowerCase();
 
-      if (error) {
-        return { success: false, error: error.message };
-      }
+  if (!supabase || !isSupabaseConfigured) {
+    return { success: false, error: 'Client Supabase non configuré.' };
+  }
 
-      if (data.user) {
-        const profile = await syncOrCreateProfile({
-          id: data.user.id,
-          email: data.user.email,
-          user_metadata: data.user.user_metadata,
-          provider: 'email',
-        });
-        const authUser = profileToAuthUser(profile);
-        return { success: true, user: authUser };
-      }
-    } catch (e: any) {
-      return { success: false, error: e.message || 'Erreur d’authentification' };
+  try {
+    console.log('[Supabase Auth] signInWithPassword appelé pour:', cleanEmail);
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: cleanEmail,
+      password: password,
+    });
+
+    if (error) {
+      console.error('[Supabase Auth] Échec signInWithPassword:', error.message, error.status);
+      return { success: false, error: formatSupabaseAuthError(error) };
     }
+
+    if (data?.user && data?.session) {
+      console.log('[Supabase Auth] Connexion réussie, session active reçue pour user:', data.user.id);
+      const profile = await syncOrCreateProfile(data.user);
+      const authUser = profileToAuthUser(profile);
+      return { success: true, user: authUser };
+    }
+
+    return { success: false, error: 'Session non obtenue. Veuillez vérifier vos identifiants.' };
+  } catch (e: any) {
+    console.error('[Supabase Auth] Exception signInWithPassword:', e);
+    return { success: false, error: formatSupabaseAuthError(e) };
   }
-
-  // 2. Local fallback verification
-  if (password.length < 6 && password !== 'admin' && password !== 'demo' && password !== 'password123') {
-    return { success: false, error: 'Le mot de passe doit contenir au moins 6 caractères.' };
-  }
-
-  const profile = await syncOrCreateProfile({
-    id: `usr_email_${Date.now()}`,
-    email: email,
-    provider: 'email',
-    user_metadata: {
-      full_name: email.split('@')[0].replace('.', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-      avatar_url: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80',
-    },
-  });
-
-  const authUser = profileToAuthUser(profile);
-  localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(authUser));
-  return { success: true, user: authUser };
 }
 
 /**
- * Sign Up with Email and Password
+ * Sign Up with Email and Password using Supabase Auth
  */
 export async function signUpWithEmailPassword(
   email: string,
   password: string,
   fullName: string
-): Promise<{ success: boolean; error?: string; user?: AuthUser }> {
-  if (supabase && isSupabaseConfigured) {
-    try {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            full_name: fullName,
-            avatar_url: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80`,
-          },
-        },
-      });
+): Promise<{ success: boolean; error?: string; needsConfirmation?: boolean; user?: AuthUser }> {
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanName = fullName.trim();
 
-      if (error) {
-        return { success: false, error: error.message };
-      }
-
-      if (data.user) {
-        const profile = await syncOrCreateProfile({
-          id: data.user.id,
-          email: data.user.email,
-          user_metadata: { full_name: fullName },
-          provider: 'email',
-        });
-        const authUser = profileToAuthUser(profile);
-        return { success: true, user: authUser };
-      }
-    } catch (e: any) {
-      return { success: false, error: e.message || 'Erreur lors de l’inscription' };
-    }
+  if (!supabase || !isSupabaseConfigured) {
+    return { success: false, error: 'Client Supabase non configuré.' };
   }
 
-  // Local fallback
-  const profile = await syncOrCreateProfile({
-    id: `usr_signup_${Date.now()}`,
-    email: email,
-    provider: 'email',
-    user_metadata: {
-      full_name: fullName,
-    },
-  });
-  const authUser = profileToAuthUser(profile);
-  localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(authUser));
-  return { success: true, user: authUser };
+  try {
+    console.log('[Supabase Auth] signUp appelé pour:', cleanEmail);
+    const { data, error } = await supabase.auth.signUp({
+      email: cleanEmail,
+      password: password,
+      options: {
+        data: {
+          full_name: cleanName,
+          avatar_url: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80`,
+        },
+      },
+    });
+
+    if (error) {
+      console.error('[Supabase Auth] Échec signUp:', error.message, error.status);
+      return { success: false, error: formatSupabaseAuthError(error) };
+    }
+
+    console.log('[Supabase Auth] Réponse signUp:', {
+      userId: data?.user?.id,
+      hasSession: Boolean(data?.session),
+      identitiesCount: data?.user?.identities?.length,
+      confirmationSentAt: data?.user?.confirmation_sent_at,
+    });
+
+    // Check if user already exists (Supabase sometimes returns user with empty identities when user already registered)
+    if (data?.user && data?.user?.identities && data.user.identities.length === 0) {
+      return {
+        success: false,
+        error: 'Cette adresse email est déjà enregistrée. Veuillez vous connecter ou réinitialiser votre mot de passe.',
+      };
+    }
+
+    if (data?.user) {
+      // Case 1: Session is null -> Email confirmation is required by Supabase project
+      if (!data.session) {
+        console.log('[Supabase Auth] Inscription réussie : Confirmation email requise.');
+        return {
+          success: true,
+          needsConfirmation: true,
+        };
+      }
+
+      // Case 2: Session is returned immediately -> User is authenticated
+      console.log('[Supabase Auth] Inscription réussie : Session immédiate pour user:', data.user.id);
+      const profile = await syncOrCreateProfile(data.user);
+      const authUser = profileToAuthUser(profile);
+      return {
+        success: true,
+        needsConfirmation: false,
+        user: authUser,
+      };
+    }
+
+    return { success: false, error: 'Erreur inattendue lors de la création du compte.' };
+  } catch (e: any) {
+    console.error('[Supabase Auth] Exception signUp:', e);
+    return { success: false, error: formatSupabaseAuthError(e) };
+  }
 }
 
 /**
  * Request Password Reset Email via Supabase Auth
  */
 export async function resetPasswordForEmail(email: string): Promise<{ success: boolean; error?: string }> {
-  if (supabase && isSupabaseConfigured) {
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo: window.location.origin,
-      });
-      if (error) {
-        return { success: false, error: error.message };
-      }
-      return { success: true };
-    } catch (e: any) {
-      return { success: false, error: e.message || 'Erreur lors de la réinitialisation' };
-    }
+  const cleanEmail = email.trim().toLowerCase();
+
+  if (!supabase || !isSupabaseConfigured) {
+    return { success: false, error: 'Client Supabase non configuré.' };
   }
 
-  // Graceful simulation for preview/demo
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({ success: true });
-    }, 600);
-  });
+  try {
+    const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo: window.location.origin,
+    });
+    if (error) {
+      return { success: false, error: formatSupabaseAuthError(error) };
+    }
+    return { success: true };
+  } catch (e: any) {
+    return { success: false, error: formatSupabaseAuthError(e) };
+  }
 }
 
 /**
- * Sign Out handler
+ * Sign Out handler using Supabase Auth
  */
 export async function signOutSupabase(): Promise<void> {
   if (supabase && isSupabaseConfigured) {
     try {
+      console.log('[Supabase Auth] Déconnexion en cours...');
       await supabase.auth.signOut();
+      console.log('[Supabase Auth] Déconnexion effectuée.');
     } catch (e) {
-      console.warn('Supabase signout notice:', e);
+      console.warn('[Supabase Auth] Notice signOut:', e);
     }
+}
+
+/**
+ * Maps a raw Supabase PostgreSQL row from public.students to the frontend Student model
+ */
+export function mapSupabaseToStudent(row: any): Student {
+  const firstName = row.first_name || '';
+  const lastName = row.last_name || '';
+  const fullName = (firstName || lastName)
+    ? `${firstName} ${lastName}`.trim()
+    : (row.name || 'Élève');
+  
+  const photoUrl = row.photo_url || row.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80';
+  const matricule = row.matricule || row.rollNumber || `MAT-${row.id ? String(row.id).slice(0, 6) : '001'}`;
+  const className = row.class_name || row.className || 'Non assigné';
+  const birthDate = row.birth_date || row.dateOfBirth || null;
+
+  return {
+    id: String(row.id),
+    matricule: matricule,
+    first_name: firstName,
+    last_name: lastName,
+    name: fullName,
+    birth_date: birthDate,
+    birth_place: row.birth_place || '',
+    gender: (row.gender === 'F' ? 'F' : row.gender === 'Autre' ? 'Autre' : 'M'),
+    email: row.email || '',
+    phone: row.phone || row.parentPhone || '',
+    address: row.address || '',
+    photo_url: photoUrl,
+    class_name: className,
+    academic_year: row.academic_year || '2024-2025',
+    enrollment_date: row.enrollment_date || row.admissionDate || new Date().toISOString().slice(0, 10),
+    status: (row.status === 'inactive' || row.status === 'graduated' || row.status === 'suspended') ? row.status : 'active',
+    created_at: row.created_at || new Date().toISOString(),
+    updated_at: row.updated_at || new Date().toISOString(),
+
+    // Backward-compatibility aliases for existing UI components
+    className: className,
+    avatar: photoUrl,
+    rollNumber: matricule,
+    dateOfBirth: birthDate || '2007-05-15',
+    classId: row.class_id || row.classId || '',
+    parentName: row.parent_name || row.parentName || '',
+    parentPhone: row.parent_phone || row.parentPhone || row.phone || '',
+    parentEmail: row.parent_email || row.parentEmail || '',
+    admissionDate: row.enrollment_date || row.admissionDate || '2024-09-01',
+    attendanceRate: typeof row.attendance_rate === 'number' ? row.attendance_rate : (typeof row.attendanceRate === 'number' ? row.attendanceRate : 96),
+    averageGrade: typeof row.average_grade === 'number' ? row.average_grade : (typeof row.averageGrade === 'number' ? row.averageGrade : 15.0),
+    notes: row.notes || '',
+  };
+}
+
+/**
+ * Prepares a Student object for insertion or update into public.students
+ */
+export function mapStudentToSupabasePayload(student: Partial<Student>): Record<string, any> {
+  let firstName = student.first_name || '';
+  let lastName = student.last_name || '';
+
+  if (!firstName && !lastName && student.name) {
+    const parts = student.name.trim().split(' ');
+    firstName = parts[0] || '';
+    lastName = parts.slice(1).join(' ') || '';
   }
-  localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+
+  const payload: Record<string, any> = {
+    matricule: student.matricule || student.rollNumber || `MAT-${Date.now().toString().slice(-6)}`,
+    first_name: firstName || 'Élève',
+    last_name: lastName || '',
+    birth_date: student.birth_date || student.dateOfBirth || null,
+    birth_place: student.birth_place || null,
+    gender: student.gender || 'M',
+    email: student.email ? student.email.trim().toLowerCase() : null,
+    phone: student.phone || student.parentPhone || null,
+    address: student.address || null,
+    photo_url: student.photo_url || student.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&auto=format&fit=crop&q=80',
+    class_name: student.class_name || student.className || 'Non assigné',
+    academic_year: student.academic_year || '2024-2025',
+    enrollment_date: student.enrollment_date || student.admissionDate || new Date().toISOString().slice(0, 10),
+    status: student.status || 'active',
+  };
+
+  return payload;
+}
+
+/**
+ * Fetch all students from Supabase PostgreSQL (public.students)
+ */
+export async function fetchStudentsFromSupabase(): Promise<{
+  success: boolean;
+  data: Student[];
+  error?: string;
+}> {
+  if (!supabase || !isSupabaseConfigured) {
+    return { success: false, data: [], error: 'Client Supabase non configuré.' };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('students')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[STUDENT FETCH ERROR]', error);
+      return { success: false, data: [], error: formatSupabaseAuthError(error) };
+    }
+
+    const students = (data || []).map(mapSupabaseToStudent);
+    return { success: true, data: students };
+  } catch (err: any) {
+    console.error('[STUDENT FETCH EXCEPTION]', err);
+    return { success: false, data: [], error: err?.message || 'Erreur lors du chargement des élèves.' };
+  }
+}
+
+/**
+ * Create a new student in Supabase PostgreSQL (public.students)
+ */
+export async function createStudentInSupabase(studentData: Partial<Student>): Promise<{
+  success: boolean;
+  data?: Student;
+  error?: string;
+}> {
+  if (!supabase || !isSupabaseConfigured) {
+    return { success: false, error: 'Client Supabase non configuré.' };
+  }
+
+  try {
+    // 1. Verify authentication
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      console.warn('[STUDENT INSERT] Aucun utilisateur authentifié');
+      return { success: false, error: 'Vous devez être connecté pour ajouter un étudiant.' };
+    }
+
+    const payload = mapStudentToSupabasePayload(studentData);
+    console.log('[STUDENT] INSERT START', {
+      matricule: payload.matricule,
+      first_name: payload.first_name,
+      last_name: payload.last_name,
+      email: payload.email,
+      class_name: payload.class_name,
+    });
+
+    const { data, error } = await supabase
+      .from('students')
+      .insert(payload)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[STUDENT INSERT ERROR]', error);
+      let userFriendlyError = error.message;
+      if (error.code === '23505' || error.message?.includes('duplicate key') || error.message?.includes('matricule')) {
+        userFriendlyError = `Le matricule "${payload.matricule}" ou l'adresse email est déjà utilisé.`;
+      } else if (error.code === '42501' || error.message?.includes('row-level security')) {
+        userFriendlyError = "Permission refusée par la politique de sécurité (RLS). Veuillez vous reconnecter.";
+      }
+      return { success: false, error: userFriendlyError };
+    }
+
+    console.log('[STUDENT INSERT SUCCESS]', data);
+    return { success: true, data: mapSupabaseToStudent(data) };
+  } catch (err: any) {
+    console.error('[STUDENT INSERT EXCEPTION]', err);
+    return { success: false, error: err?.message || "Erreur lors de l'enregistrement de l'élève." };
+  }
+}
+
+/**
+ * Update an existing student in Supabase PostgreSQL (public.students)
+ */
+export async function updateStudentInSupabase(
+  id: string,
+  studentData: Partial<Student>
+): Promise<{
+  success: boolean;
+  data?: Student;
+  error?: string;
+}> {
+  if (!supabase || !isSupabaseConfigured) {
+    return { success: false, error: 'Client Supabase non configuré.' };
+  }
+
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return { success: false, error: 'Vous devez être connecté pour modifier un étudiant.' };
+    }
+
+    const payload = mapStudentToSupabasePayload(studentData);
+    payload.updated_at = new Date().toISOString();
+
+    console.log('[STUDENT] UPDATE START', { id, matricule: payload.matricule });
+
+    const { data, error } = await supabase
+      .from('students')
+      .update(payload)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[STUDENT UPDATE ERROR]', error);
+      return { success: false, error: error.message };
+    }
+
+    console.log('[STUDENT UPDATE SUCCESS]', data);
+    return { success: true, data: mapSupabaseToStudent(data) };
+  } catch (err: any) {
+    console.error('[STUDENT UPDATE EXCEPTION]', err);
+    return { success: false, error: err?.message || 'Erreur lors de la modification de l’élève.' };
+  }
+}
+
+/**
+ * Delete a student from Supabase PostgreSQL (public.students)
+ */
+export async function deleteStudentInSupabase(id: string): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  if (!supabase || !isSupabaseConfigured) {
+    return { success: false, error: 'Client Supabase non configuré.' };
+  }
+
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return { success: false, error: 'Vous devez être connecté pour supprimer un étudiant.' };
+    }
+
+    console.log('[STUDENT] DELETE START', { id });
+
+    const { error } = await supabase
+      .from('students')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      console.error('[STUDENT DELETE ERROR]', error);
+      return { success: false, error: error.message };
+    }
+
+    console.log('[STUDENT DELETE SUCCESS]', { id });
+    return { success: true };
+  } catch (err: any) {
+    console.error('[STUDENT DELETE EXCEPTION]', err);
+    return { success: false, error: err?.message || 'Erreur lors de la suppression de l’élève.' };
+  }
+}
+
+/**
+ * Fetch a single student by ID from Supabase PostgreSQL
+ */
+export async function fetchStudentByIdFromSupabase(id: string): Promise<{
+  success: boolean;
+  data?: Student;
+  error?: string;
+}> {
+  if (!supabase || !isSupabaseConfigured) {
+    return { success: false, error: 'Client Supabase non configuré.' };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('students')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      console.error('[STUDENT FETCH BY ID ERROR]', error);
+      return { success: false, error: error.message };
+    }
+
+    return { success: true, data: mapSupabaseToStudent(data) };
+  } catch (err: any) {
+    console.error('[STUDENT FETCH BY ID EXCEPTION]', err);
+    return { success: false, error: err?.message || 'Élève introuvable.' };
+  }
 }
 
 /**
