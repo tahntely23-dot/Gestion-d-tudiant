@@ -26,10 +26,10 @@ import { ScheduleModal } from './components/modals/ScheduleModal';
 
 // Types
 import { Student, ClassRoom, Subject, Teacher } from './types';
-import { Menu } from 'lucide-react';
+import { Loader2, Menu } from 'lucide-react';
 
 function MainAppContent() {
-  const { activeTab, setActiveTab, isAuthenticated, currentUser } = useSchool();
+  const { activeTab, setActiveTab, isAuthenticated, currentUser, isAuthLoading } = useSchool();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Modals state (All hooks must be declared before any conditional return)
@@ -48,6 +48,15 @@ function MainAppContent() {
   const [teacherToEdit, setTeacherToEdit] = useState<Teacher | null>(null);
 
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+
+  // Wait for the Supabase session to be restored before rendering private pages
+  if (isAuthLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gradient-to-br from-[#f0fdfc] via-[#e6f7f6] to-[#f4faf9]">
+        <Loader2 className="w-6 h-6 animate-spin text-[#1597A3]" />
+      </div>
+    );
+  }
 
   // If not authenticated, display login screen
   if (!isAuthenticated || !currentUser) {

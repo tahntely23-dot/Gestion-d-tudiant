@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { Session } from '@supabase/supabase-js';
 import { Student, ClassRoom, Subject, Grade, AttendanceRecord, Teacher, ScheduleItem, SchoolNotification, ViewTab, AuthUser, UserProfile } from '../types';
 import {
   INITIAL_STUDENTS,
@@ -22,6 +23,7 @@ import {
   profileToAuthUser,
   getLocalProfiles,
   resetPasswordForEmail,
+  getCurrentSession,
 } from '../lib/supabase';
 
 interface SchoolContextType {
@@ -35,6 +37,7 @@ interface SchoolContextType {
   // Auth
   currentUser: AuthUser | null;
   isAuthenticated: boolean;
+  isAuthLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string; user?: AuthUser }>;
   signup: (email: string, password: string, fullName: string) => Promise<{ success: boolean; error?: string; user?: AuthUser }>;
   loginWithOAuth: (provider: 'google' | 'facebook') => Promise<{ success: boolean; error?: string; user?: AuthUser }>;
@@ -105,7 +108,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       try {
         return JSON.parse(savedUser);
       } catch (e) {
-        return DEMO_USERS[0];
+        return null;
       }
     }
     return null; // Start at login page if not logged in
@@ -115,33 +118,56 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return localStorage.getItem('eduglass_is_authenticated') === 'true';
   });
 
-  // Supabase Auth state change listener (Handles OAuth redirects & token refreshes)
+  // While the Supabase session is being restored (page load / OAuth callback),
+  // private pages must not be rendered from the cached localStorage flag.
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(isSupabaseConfigured);
+
+  const applySession = async (session: Session | null) => {
+    if (session?.user) {
+      const profile = await syncOrCreateProfile({
+        id: session.user.id,
+        email: session.user.email,
+        user_metadata: session.user.user_metadata,
+        provider: (session.user.app_metadata?.provider as any) || 'email',
+      });
+      const authUser = profileToAuthUser(profile);
+      setCurrentUser(authUser);
+      setIsAuthenticated(true);
+      localStorage.setItem('eduglass_auth_user', JSON.stringify(authUser));
+      localStorage.setItem('eduglass_is_authenticated', 'true');
+      setUserProfiles(getLocalProfiles());
+    } else {
+      setCurrentUser(null);
+      setIsAuthenticated(false);
+      localStorage.removeItem('eduglass_auth_user');
+      localStorage.setItem('eduglass_is_authenticated', 'false');
+    }
+  };
+
+  // Supabase Auth session restore + state change listener
+  // (handles OAuth callbacks, token refreshes and sign-outs from other tabs)
   useEffect(() => {
     if (!supabase || !isSupabaseConfigured) return;
 
-    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (session?.user) {
-        const profile = await syncOrCreateProfile({
-          id: session.user.id,
-          email: session.user.email,
-          user_metadata: session.user.user_metadata,
-          provider: (session.user.app_metadata?.provider as any) || 'email',
-        });
-        const authUser = profileToAuthUser(profile);
-        setCurrentUser(authUser);
-        setIsAuthenticated(true);
-        localStorage.setItem('eduglass_auth_user', JSON.stringify(authUser));
-        localStorage.setItem('eduglass_is_authenticated', 'true');
-        setUserProfiles(getLocalProfiles());
-      } else if (event === 'SIGNED_OUT') {
-        setCurrentUser(null);
-        setIsAuthenticated(false);
-        localStorage.removeItem('eduglass_auth_user');
-        localStorage.setItem('eduglass_is_authenticated', 'false');
-      }
+    let active = true;
+
+    getCurrentSession()
+      .then(async (session) => {
+        if (!active) return;
+        await applySession(session);
+      })
+      .finally(() => {
+        if (active) setIsAuthLoading(false);
+      });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!active) return;
+      await applySession(session);
+      setIsAuthLoading(false);
     });
 
     return () => {
+      active = false;
       authListener.subscription.unsubscribe();
     };
   }, []);
@@ -151,10 +177,13 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // Artificial slight network delay for realism
     await new Promise((res) => setTimeout(res, 350));
 
-    // 1. Check Demo Accounts first for instant demonstration
-    const matched = DEMO_USERS.find(
-      (u) => u.email.toLowerCase().trim() === email.toLowerCase().trim()
-    );
+    // 1. Demo accounts are only available when Supabase is not configured.
+    // With a real Supabase project, every login goes through Supabase Auth.
+    const matched = isSupabaseConfigured
+      ? undefined
+      : DEMO_USERS.find(
+          (u) => u.email.toLowerCase().trim() === email.toLowerCase().trim()
+        );
 
     if (matched) {
       if (matched.password === password || password === 'admin' || password === 'demo' || password === '123456' || password === 'password123') {
@@ -235,6 +264,8 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const quickLogin = (userId: string) => {
+    // Never fabricate a session when a real Supabase project is connected.
+    if (isSupabaseConfigured) return;
     const matched = DEMO_USERS.find((u) => u.id === userId) || DEMO_USERS[0];
     const userObj: AuthUser = {
       id: matched.id,
@@ -262,8 +293,8 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     localStorage.setItem('eduglass_is_authenticated', 'false');
   };
 
-  // Session expiration simulation (For test case 7)
   const expireSession = () => {
+    void signOutSupabase();
     setCurrentUser(null);
     setIsAuthenticated(false);
     localStorage.removeItem('eduglass_auth_user');
@@ -569,6 +600,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         loginWithOAuth,
         resetPassword,
         quickLogin,
+        isAuthLoading,
         logout,
         expireSession,
         userProfiles,
